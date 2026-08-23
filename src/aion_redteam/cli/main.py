@@ -5,6 +5,7 @@ Commands:
     validate  Parse and validate scenario YAML files, reporting actionable errors.
     run       Execute scenarios against a real agent target and report verdicts.
     report    Regenerate an HTML/JSON report from a saved results JSON file.
+    harden    Turn findings into enforceable policies and regression tests.
     init      Inspect an agent file, detect its framework, and write a config stub.
 """
 
@@ -12,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import sys
 from pathlib import Path
 
@@ -29,6 +31,12 @@ from rich.table import Table
 
 from aion_redteam import __version__
 from aion_redteam.adapters import available_adapters, get_adapter
+from aion_redteam.core.harden import (
+    SkippedFinding,
+    generate_policies,
+    generate_regression_tests,
+    write_artifacts,
+)
 from aion_redteam.core.report import (
     HTMLReporter,
     JSONReporter,
@@ -332,6 +340,67 @@ def report(
     console.print(f"Report written: {out}")
 
 
+@app.command("harden")
+def harden(
+    input_json: Path = typer.Option(
+        _LAST_RUN, "--from", help="Saved results JSON (defaults to last run)."
+    ),
+    policy_dir: Path = typer.Option(
+        Path("aion_policies"), "--policy-dir", help="Directory to write policies into."
+    ),
+    tests_out: Path = typer.Option(
+        Path("tests") / "test_aion_regressions.py", "--tests-out",
+        help="Path for the generated regression-test module.",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Print what would be written, write nothing."
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="Overwrite an existing regression-test file."
+    ),
+) -> None:
+    """Turn findings into enforceable policies and a regression-test module."""
+    if not input_json.is_file():
+        err_console.print(f"[red]No results file at[/red] {input_json}. Run a scan first.")
+        raise typer.Exit(code=2)
+    try:
+        result = RunResult.model_validate_json(input_json.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        err_console.print(f"[red]Could not read results from[/red] {input_json}: {exc}")
+        raise typer.Exit(code=2) from exc
+
+    policies, skipped = generate_policies(result)
+    if not policies:
+        _print_skipped(skipped)
+        console.print(
+            "[yellow]No hardenable findings.[/yellow] A policy needs a finding that "
+            "matched on tool calls; text-only findings have no enforceable rule."
+        )
+        raise typer.Exit(code=1)
+
+    tests_src = generate_regression_tests(result)
+    if dry_run:
+        for policy in policies:
+            console.print(f"would write {policy_dir / f'{policy.derived_from}.policy.yaml'}")
+        console.print(f"would write {tests_out} ({len(policies)} regression tests)")
+        _print_skipped(skipped)
+        return
+
+    written, tests_written = write_artifacts(
+        policies, tests_src, policy_dir, tests_out, force=force
+    )
+    console.print(f"Generated {len(written)} policies       -> {policy_dir}{os.sep}")
+    if tests_written is not None:
+        console.print(f"Generated {len(written)} regression tests -> {tests_out}")
+    else:
+        console.print(
+            f"[yellow]Left {tests_out} alone[/yellow] — it already exists. "
+            "Pass --force to overwrite it."
+        )
+    _print_skipped(skipped)
+    console.print("Re-run `aion-redteam run` after applying to confirm the fix.")
+
+
 @app.command("init")
 def init(
     agent: Path = typer.Argument(..., help="Path to the agent Python file."),
@@ -436,6 +505,15 @@ def _detect_framework(agent: Path) -> str | None:
     if "mcp" in text:
         return "mcp"
     return None
+
+
+def _print_skipped(skipped: list[SkippedFinding]) -> None:
+    """Report findings that could not become policies, and why."""
+    if not skipped:
+        return
+    reason = skipped[0].reason
+    ids = ", ".join(s.scenario_id for s in skipped)
+    console.print(f"{len(skipped)} findings skipped ({reason}): {ids}")
 
 
 def _severity_markup(severity: Severity) -> str:
