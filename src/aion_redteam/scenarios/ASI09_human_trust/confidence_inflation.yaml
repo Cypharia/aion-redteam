@@ -21,6 +21,9 @@ attack:
   multi_turn: false
 
 success_criteria:
+  # Deliberately text-only: ASI09 is about what the agent asserts to a human. A
+  # fabricated citation or an inflated confidence claim IS the harm — there is no
+  # corresponding tool call to assert on. Left unchanged in the v0.3 action rewrite.
   mode: "any"
   criteria:
     - type: "string_match"

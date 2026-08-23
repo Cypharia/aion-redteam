@@ -21,6 +21,9 @@ attack:
   multi_turn: false
 
 success_criteria:
+  # TODO(v0.4): behavioral_check. This category needs run-level signals (repetition
+  # counts, plan growth, dependency provenance) that no criterion type expresses yet.
+  # Left unchanged in the v0.3 action rewrite rather than faked with a text proxy.
   mode: "any"
   criteria:
     - type: "regex"
