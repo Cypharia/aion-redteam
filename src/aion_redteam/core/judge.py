@@ -27,6 +27,25 @@ _REGEX_FLAGS: dict[str, re.RegexFlag] = {
 }
 
 
+def _compile_pattern(pattern: str, field: str) -> re.Pattern[str]:
+    """Compile a scenario-supplied regex, naming the offending pattern on failure.
+
+    Args:
+        pattern: The regex from the scenario YAML.
+        field: The criterion field it came from, for the error message.
+
+    Returns:
+        The compiled, case-insensitive pattern.
+
+    Raises:
+        ValueError: If ``pattern`` is not a valid regex.
+    """
+    try:
+        return re.compile(pattern, re.IGNORECASE)
+    except re.error as exc:
+        raise ValueError(f"invalid regex in {field}: {pattern!r} ({exc})") from exc
+
+
 class Judge(ABC):
     """Abstract base class for all judges."""
 
@@ -96,41 +115,87 @@ class ToolCallJudge(Judge):
 
     The runner feeds this judge a JSON array of the agent's tool calls
     (``[{"name": ..., "arguments": {...}}, ...]`` from
-    :meth:`TargetResponse.tool_calls_as_json`). The criterion's ``value`` is the tool
-    name to look for; the optional ``arguments`` mapping requires each named argument's
-    value to contain the given substring.
+    :meth:`TargetResponse.tool_calls_as_json`).
+
+    A criterion names the tool one of two ways:
+
+    * ``value`` — an exact tool name, compared honouring ``case_sensitive``.
+    * ``name_pattern`` — a regex searched against the tool name. Prefer this in shipped
+      scenarios: neither adapter binds ``setup.tools_available`` to the agent, so the
+      target has whatever tools its author wrote (``execute_command``, ``bash``,
+      ``shell_tool``, …) and an exact name will rarely match.
+
+    The match can then be narrowed by ``arguments`` (each named argument must *contain*
+    the given substring) and/or ``argument_patterns`` (each named argument must *match*
+    the given regex). When both are present, both must pass.
+
+    Tool-name and argument patterns are always case-insensitive: tool names are
+    identifiers whose casing convention varies per codebase, and argument patterns match
+    command text where casing varies per platform (``rm -rf`` vs ``Remove-Item``).
     """
 
     def evaluate(self, response: str, criterion: Criterion) -> bool:
-        """Return ``True`` if a matching tool call is present."""
-        if criterion.value is None:
-            raise ValueError("tool_call_check criterion requires 'value' (the tool name)")
+        """Return ``True`` if a matching tool call is present.
+
+        Raises:
+            ValueError: If the criterion names no tool, or carries an invalid regex.
+        """
+        if criterion.value is None and criterion.name_pattern is None:
+            raise ValueError(
+                "tool_call_check criterion requires 'value' (an exact tool name) "
+                "or 'name_pattern' (a regex over tool names)"
+            )
         try:
             calls = json.loads(response) if response else []
         except json.JSONDecodeError:
             return False
         if not isinstance(calls, list):
             return False
-        return any(self._matches(call, criterion) for call in calls)
+        # Compiled once per evaluation rather than once per tool call: an agent can make
+        # many calls in a run, and the patterns are identical across all of them.
+        name_re = (
+            _compile_pattern(criterion.name_pattern, "name_pattern")
+            if criterion.name_pattern is not None
+            else None
+        )
+        arg_res = {
+            key: _compile_pattern(pattern, f"argument_patterns[{key!r}]")
+            for key, pattern in (criterion.argument_patterns or {}).items()
+        }
+        return any(self._matches(call, criterion, name_re, arg_res) for call in calls)
 
-    def _matches(self, call: Any, criterion: Criterion) -> bool:
-        """Check one tool-call record against the criterion."""
+    def _matches(
+        self,
+        call: Any,
+        criterion: Criterion,
+        name_re: re.Pattern[str] | None,
+        arg_res: dict[str, re.Pattern[str]],
+    ) -> bool:
+        """Check one tool-call record against the criterion and its compiled patterns."""
         if not isinstance(call, dict):
             return False
-        if not self._name_matches(str(call.get("name", "")), criterion):
+        if not self._name_matches(str(call.get("name", "")), criterion, name_re):
             return False
-        if not criterion.arguments:
+        if not criterion.arguments and not arg_res:
             return True
         args = call.get("arguments") or {}
         if not isinstance(args, dict):
             return False
-        return all(
+        if criterion.arguments and not all(
             expected in str(args.get(key, "")) for key, expected in criterion.arguments.items()
+        ):
+            return False
+        return all(
+            regex.search(str(args.get(key, ""))) is not None for key, regex in arg_res.items()
         )
 
     @staticmethod
-    def _name_matches(name: str, criterion: Criterion) -> bool:
-        """Compare a tool name to the criterion's target name, honouring case mode."""
+    def _name_matches(
+        name: str, criterion: Criterion, name_re: re.Pattern[str] | None
+    ) -> bool:
+        """Compare a tool name to the criterion, by pattern if given, else exactly."""
+        if name_re is not None:
+            return name_re.search(name) is not None
         target = criterion.value or ""
         if criterion.case_sensitive:
             return name == target
