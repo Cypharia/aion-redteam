@@ -75,6 +75,9 @@ packages = ["src/aion_redteam"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "integration: drives a real agent against a live model; skipped when unreachable",
+]
 
 [tool.coverage.run]
 source = ["src/aion_redteam/core"]
