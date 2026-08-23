@@ -6,6 +6,33 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-23
+
+An honesty patch. The package advertised capabilities it does not have; this corrects
+the claims rather than building the features. No functional change to the harness.
+
+### Changed
+- Package `description` no longer claims CrewAI and MCP support. Only the LangGraph
+  adapters (in-process and server) exist.
+- `LLMJudge` now says it is planned for v0.4 instead of "available in v0.2", and its
+  `NotImplementedError` no longer points at an extra that does nothing. The class and
+  its registry entry are retained — removing them would break any scenario that
+  references `llm_judge`.
+- `SECURITY.md` gained a "Threat model of the harness itself" section: the ReDoS bounds
+  on judge input, the warning never to point the harness at production, and an explicit
+  statement that a harness bypass (a `PASS` for a vulnerable agent) is a security defect.
+
+### Removed
+- The `crewai`, `mcp`, and `llm-judge` optional-dependency extras. No adapter or judge
+  consumed them, so installing them did nothing. Examples that need the Anthropic SDK
+  now name `anthropic` directly instead of hiding it behind `llm-judge`.
+
+### Added
+- `examples/ollama_tool_agent.py` — a real Ollama-backed LangGraph agent with tools
+  bound, plus `tests/test_toolcall_capture.py` verifying that the adapter really does
+  populate `TargetResponse.tool_calls` against a live model. Groundwork for scenarios
+  that assert on actions rather than on text.
+
 ## [0.2.0] - 2026-06-15
 
 ### Added

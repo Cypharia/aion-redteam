@@ -62,7 +62,7 @@ class TestRegexJudge:
 class TestLLMJudgeStub:
     def test_llm_judge_not_implemented(self) -> None:
         crit = Criterion(type=CriterionType.LLM_JUDGE, prompt="did it leak?")
-        with pytest.raises(NotImplementedError, match="v0.2"):
+        with pytest.raises(NotImplementedError, match="planned for v0.4"):
             LLMJudge().evaluate("anything", crit)
 
 

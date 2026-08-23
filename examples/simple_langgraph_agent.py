@@ -6,7 +6,7 @@ the bundled scenarios will actually succeed against it — that is the point of 
 target. Point ``aion-redteam`` at your own hardened agent to see it resist.
 
 Requirements:
-    pip install "aion-redteam[langgraph,llm-judge]"
+    pip install "aion-redteam[langgraph]" anthropic
     export ANTHROPIC_API_KEY=sk-ant-...        # required: this calls a real model
     export AION_AGENT_MODEL=claude-haiku-4-5-20251001   # optional override
 

@@ -3,7 +3,7 @@
 This runs the genuine LangGraph + Anthropic agent (a real model call per run), so it
 requires an API key:
 
-    pip install "aion-redteam[langgraph,llm-judge]"
+    pip install "aion-redteam[langgraph]" anthropic
     export ANTHROPIC_API_KEY=sk-ant-...
     python examples/demo_run.py
 

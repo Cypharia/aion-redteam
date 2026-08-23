@@ -84,13 +84,11 @@ class RegexJudge(Judge):
 
 
 class LLMJudge(Judge):
-    """Scores agent output with an LLM. Available in v0.2."""
+    """Scores agent output with an LLM. Planned for v0.4."""
 
     def evaluate(self, response: str, criterion: Criterion) -> bool:
-        """Not implemented until v0.2."""
-        raise NotImplementedError(
-            "LLMJudge available in v0.2. Install aion-redteam[llm-judge]"
-        )
+        """Not implemented; planned for v0.4."""
+        raise NotImplementedError("LLMJudge is not implemented yet; planned for v0.4.")
 
 
 class ToolCallJudge(Judge):
