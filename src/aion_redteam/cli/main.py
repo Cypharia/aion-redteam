@@ -6,6 +6,7 @@ Commands:
     run       Execute scenarios against a real agent target and report verdicts.
     report    Regenerate an HTML/JSON report from a saved results JSON file.
     harden    Turn findings into enforceable policies and regression tests.
+    baseline  Accept a run's verdicts so CI can gate on regressions, not absolutes.
     init      Inspect an agent file, detect its framework, and write a config stub.
 """
 
@@ -13,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import enum
 import os
 import sys
 from pathlib import Path
@@ -31,6 +33,14 @@ from rich.table import Table
 
 from aion_redteam import __version__
 from aion_redteam.adapters import available_adapters, get_adapter
+from aion_redteam.core.baseline import (
+    FINDING_VERDICTS,
+    Baseline,
+    BaselineDiff,
+    at_or_above,
+    compare,
+    load_baseline,
+)
 from aion_redteam.core.harden import (
     SkippedFinding,
     generate_policies,
@@ -81,6 +91,32 @@ err_console = Console(stderr=True)
 
 # Default location for the most recent run's JSON, used by `report` and `run --save`.
 _LAST_RUN = Path(".aion_redteam") / "last_run.json"
+# Default location for the accepted baseline, used by `run --baseline`.
+_BASELINE = Path(".aion_redteam") / "baseline.json"
+
+baseline_app = typer.Typer(help="Manage the accepted-verdict baseline.")
+app.add_typer(baseline_app, name="baseline")
+
+
+class FailOn(enum.StrEnum):
+    """Minimum severity of a *new* failure that should fail the run."""
+
+    ANY = "any"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+# `any` and `low` are the same threshold — everything qualifies — but both are spelled
+# out because "any" is the honest name for the default that preserves old behaviour.
+_MIN_SEVERITY: dict[FailOn, Severity] = {
+    FailOn.ANY: Severity.LOW,
+    FailOn.LOW: Severity.LOW,
+    FailOn.MEDIUM: Severity.MEDIUM,
+    FailOn.HIGH: Severity.HIGH,
+    FailOn.CRITICAL: Severity.CRITICAL,
+}
 
 
 def _version_callback(value: bool) -> None:
@@ -232,6 +268,14 @@ def run(
     pdf_out: Path | None = typer.Option(
         None, "--pdf", help="Also write a detailed PDF report to this path."
     ),
+    baseline: Path | None = typer.Option(
+        None, "--baseline",
+        help="Gate on regressions against this baseline instead of on absolute state.",
+    ),
+    fail_on: FailOn = typer.Option(
+        FailOn.ANY, "--fail-on",
+        help="Minimum severity of a new failure that fails the run (with --baseline).",
+    ),
 ) -> None:
     """Run scenarios against a real agent target."""
     if adapter not in available_adapters():
@@ -304,9 +348,7 @@ def run(
         PDFReporter().write(result, pdf_out)
         console.print(f"PDF report: {pdf_out}")
 
-    # Exit non-zero when the agent is vulnerable, so CI gates on findings.
-    if result.failed or result.flaky:
-        raise typer.Exit(code=1)
+    raise typer.Exit(code=_exit_code_for(result, baseline, fail_on))
 
 
 @app.command("report")
@@ -338,6 +380,35 @@ def report(
         )
         raise typer.Exit(code=2)
     console.print(f"Report written: {out}")
+
+
+@baseline_app.command("accept")
+def baseline_accept(
+    input_json: Path = typer.Option(
+        _LAST_RUN, "--from", help="Saved results JSON (defaults to last run)."
+    ),
+    output: Path = typer.Option(
+        _BASELINE, "--output", help="Baseline file to write."
+    ),
+) -> None:
+    """Accept a run's verdicts as the known-good baseline for this target."""
+    if not input_json.is_file():
+        err_console.print(f"[red]No results file at[/red] {input_json}. Run a scan first.")
+        raise typer.Exit(code=2)
+    try:
+        result = RunResult.model_validate_json(input_json.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        err_console.print(f"[red]Could not read results from[/red] {input_json}: {exc}")
+        raise typer.Exit(code=2) from exc
+
+    accepted = Baseline.from_result(result)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(accepted.model_dump_json(indent=2), encoding="utf-8")
+    findings = sum(1 for v in accepted.scenario_verdicts.values() if v in FINDING_VERDICTS)
+    console.print(
+        f"Baseline accepted: {len(accepted.scenario_verdicts)} scenarios "
+        f"({findings} known findings) -> {output}"
+    )
 
 
 @app.command("harden")
@@ -505,6 +576,78 @@ def _detect_framework(agent: Path) -> str | None:
     if "mcp" in text:
         return "mcp"
     return None
+
+
+def _exit_code_for(
+    result: RunResult, baseline_path: Path | None, fail_on: FailOn
+) -> int:
+    """Decide `run`'s exit code, printing the baseline delta when one is in play.
+
+    Without a baseline this keeps the original behaviour exactly: any FAIL or FLAKY
+    fails the run. With one, only *new* failures at or above ``fail_on`` do — against a
+    real agent something always fails, and a gate that is always red gets switched off.
+
+    Args:
+        result: The completed run.
+        baseline_path: Path passed to ``--baseline``, or ``None``.
+        fail_on: Minimum severity of a new failure that should fail the run.
+
+    Returns:
+        The process exit code.
+    """
+    if baseline_path is None:
+        return 1 if (result.failed or result.flaky) else 0
+
+    try:
+        baseline = load_baseline(baseline_path)
+    except ValueError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2) from exc
+
+    if baseline is None:
+        # A missing baseline is a normal first run, not an error. Behave as if the flag
+        # were not passed, and say how to create one.
+        console.print(
+            f"[yellow]No baseline at {baseline_path}[/yellow] — gating on absolute "
+            "state. Create one with `aion-redteam baseline accept`."
+        )
+        return 1 if (result.failed or result.flaky) else 0
+
+    diff = compare(result, baseline)
+    _print_diff(result, diff)
+
+    blocking = at_or_above(result, diff.new_failures, _MIN_SEVERITY[fail_on])
+    if blocking:
+        return 1
+    if diff.fixed:
+        console.print(
+            "Improvements only — run `aion-redteam baseline accept` to lock them in."
+        )
+    return 0
+
+
+def _print_diff(result: RunResult, diff: BaselineDiff) -> None:
+    """Print the baseline delta prominently, above the exit decision."""
+    console.print(
+        f"[bold]{len(diff.new_failures)} new failures, {len(diff.fixed)} fixed, "
+        f"{len(diff.unchanged)} unchanged[/bold]"
+    )
+    if diff.new_failures:
+        console.print(f"  [red]new:[/red]   {', '.join(diff.new_failures)}")
+    if diff.fixed:
+        console.print(f"  [green]fixed:[/green] {', '.join(diff.fixed)}")
+    if diff.new_scenarios:
+        # Reported separately: a scenario the baseline never saw was never passing, so
+        # a failure in it is not a regression.
+        findings = [
+            s.scenario_id
+            for s in result.scenario_results
+            if s.scenario_id in diff.new_scenarios and s.verdict in FINDING_VERDICTS
+        ]
+        note = f" ({len(findings)} failing)" if findings else ""
+        console.print(
+            f"  [cyan]not in baseline:[/cyan] {', '.join(diff.new_scenarios)}{note}"
+        )
 
 
 def _print_skipped(skipped: list[SkippedFinding]) -> None:
