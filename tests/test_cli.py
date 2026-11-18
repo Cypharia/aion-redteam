@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import re
+
 from typer.testing import CliRunner
 
 from aion_redteam.cli.main import app
 
 runner = CliRunner()
+
+_ANSI = re.compile(r"\[[0-9;]*m")
 
 
 def test_version() -> None:
@@ -39,8 +43,10 @@ def test_validate_bundled(tmp_path) -> None:
 def test_run_help_exposes_overrides() -> None:
     result = runner.invoke(app, ["run", "--help"])
     assert result.exit_code == 0
-    assert "--timeout" in result.stdout
-    assert "--num-runs" in result.stdout
+    # Typer forces rich colour on GitHub Actions; strip ANSI before matching.
+    out = _ANSI.sub("", result.stdout)
+    assert "--timeout" in out
+    assert "--num-runs" in out
 
 
 def test_run_rejects_unknown_adapter(tmp_path) -> None:

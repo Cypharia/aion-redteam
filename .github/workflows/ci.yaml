@@ -26,7 +26,7 @@ jobs:
       - name: Create venv and install
         run: |
           uv venv --python ${{ matrix.python-version }}
-          uv pip install -e ".[dev,langgraph]"
+          uv pip install -e ".[dev,langgraph,pdf]"
 
       - name: Lint
         run: uv run ruff check src tests examples
