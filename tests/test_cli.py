@@ -10,7 +10,7 @@ from aion_redteam.cli.main import app
 
 runner = CliRunner()
 
-_ANSI = re.compile(r"\[[0-9;]*m")
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def test_version() -> None:
