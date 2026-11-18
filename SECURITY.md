@@ -20,6 +20,32 @@ attack systems you do not control.
   of pathological (ReDoS-prone) patterns, but review is still the first line of defense.
 - **aion-redteam makes no network calls of its own** — only the agent under test does.
 
+## Threat model of the harness itself
+
+The section above covers what the harness will do to *you*. This one covers what an
+attacker could do to *the harness*, and where its own limits are.
+
+- **Scenario YAML is untrusted input.** Community-contributed regexes are compiled and
+  run against adversarial LLM output — text an attacker may partly control. Judge input
+  is capped at `MAX_JUDGE_INPUT_CHARS` (200,000 characters) in `core/runner.py`, and
+  judge evaluation runs under the scenario's timeout, so a pathological pattern surfaces
+  as a `TIMEOUT` verdict rather than hanging the run. Those bounds limit catastrophic
+  backtracking (ReDoS); they do not eliminate it. Review new `regex` criteria before
+  running them.
+- **Scenarios execute against your real agent making real model calls.** Every
+  repetition of every scenario is a live invocation: it spends tokens, and any tool your
+  agent can really reach, it can really use. **Never point the harness at production.**
+  Run it against a staging deployment with non-production credentials and inert or
+  sandboxed tools. The bundled `examples/ollama_tool_agent.py` shows the pattern — its
+  `run_shell` and `read_file` deliberately do nothing.
+- **This repository is a collection of working attacks, by design.** The scenario
+  catalogue is adversarial payloads that succeed against real agents. Treat a clone of
+  it, and any report it generates, as you would any other offensive tooling.
+- **Bypasses in the harness are in scope.** If you find a way to make aion-redteam
+  report `PASS` for an agent that is in fact vulnerable — a judge that can be evaded, an
+  adapter that drops tool calls, a scenario whose criteria cannot fire — that is a
+  security defect in the harness, not just a bug. Report it through the process below.
+
 ## Reporting a vulnerability
 
 If you find a security vulnerability **in aion-redteam itself** (for example, a scenario

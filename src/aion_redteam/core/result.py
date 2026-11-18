@@ -12,7 +12,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from aion_redteam.core.scenario import OwaspCategory, Reference, Severity
+from aion_redteam.core.scenario import Criterion, OwaspCategory, Reference, Severity
+from aion_redteam.core.target import ToolCall
 
 
 class Verdict(enum.StrEnum):
@@ -35,6 +36,14 @@ class SingleRunDetail(BaseModel):
     error: str | None = None
     timed_out: bool = False
     duration_ms: int = 0
+
+    # Which criteria matched, and what the agent actually did. `matched_criteria` alone
+    # is indices into a scenario that may have changed (or moved) since the run, so
+    # anything reading a saved result — `harden` above all — cannot tell a tool-call
+    # match from a text one without these. Kept here so a results file stays a
+    # self-contained record of the run rather than a pointer into the scenario library.
+    matched_criteria_detail: list[Criterion] = Field(default_factory=list)
+    tool_calls: list[ToolCall] = Field(default_factory=list)
 
 
 class ScenarioResult(BaseModel):

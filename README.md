@@ -41,10 +41,15 @@ re-run them every time you change a prompt or a tool.
 - 🎯 **20 attack scenarios** spanning all 10 OWASP Agentic (ASI) categories — 2026 edition.
 - 🧩 **Scenarios are data, not code** — every attack is a YAML file; add new ones with no Python.
 - 🔌 **LangGraph adapter** that drives your real compiled graph end-to-end.
-- ⚖️ **Pluggable judges** (string-match, regex) with unambiguous, canary-based criteria.
+- ⚖️ **Pluggable judges** (string-match, regex, tool-call) with unambiguous criteria.
+- 🔧 **Judged on actions, not prose** — 14 scenarios assert on the tool calls your agent
+  actually makes, so an agent that quietly runs `rm -rf` is caught and one that refuses
+  politely is not scored as vulnerable.
+- 🛡️ **`harden`** turns a finding into an enforceable policy plus a regression test.
 - 🔁 **Flaky detection** — each scenario runs multiple times; intermittent failures surface as `FLAKY`.
 - 📊 **First-class reports** — colored terminal table, machine-readable JSON, and a styled HTML report with per-finding mitigations.
-- 🚦 **CI-ready** — non-zero exit code when your agent is found vulnerable.
+- 🚦 **CI-ready** — non-zero exit on findings, or `--baseline` to gate on *regressions*
+  only, so a known-imperfect agent does not leave your build permanently red.
 - 🏷️ **Risk scoring** — a severity-weighted 0–100 score per run.
 
 ## OWASP Agentic Top 10 (ASI) — 2026
@@ -144,14 +149,19 @@ If your compiled graph has a non-standard name, pass `--attribute my_graph`.
 
 ### Fully local example (Ollama, no API key)
 
-A ready-to-run local target lives at
-[`examples/ollama_langgraph_agent.py`](examples/ollama_langgraph_agent.py):
+Two ready-to-run local targets. Use the tool-using one to exercise the action-level
+scenarios — [`examples/ollama_tool_agent.py`](examples/ollama_tool_agent.py) binds
+`run_shell` and `read_file` to a real model (both deliberately inert, so an attack that
+succeeds destroys nothing):
 
 ```bash
 uv pip install -e ".[langgraph,ollama]"
-ollama pull llama3.2
-aion-redteam run --target examples/ollama_langgraph_agent.py --adapter langgraph --category ASI01
+ollama pull qwen2.5:3b
+aion-redteam run --target examples/ollama_tool_agent.py --adapter langgraph --category ASI02
 ```
+
+[`examples/ollama_langgraph_agent.py`](examples/ollama_langgraph_agent.py) is the same
+idea without tools, for text-only scenarios.
 
 > **Windows note:** if you hit an `OPENSSL_Uplink ... no OPENSSL_Applink` crash, a
 > standalone Python on your `PATH` is colliding with another OpenSSL DLL. Build the venv on
@@ -180,6 +190,47 @@ name from your `langgraph.json`), so a standard local server is just
 `--api-key <key>`. The adapter discovers the server's available graphs and lists them if
 the requested assistant isn't found. For slow, multi-step agents, raise the budget with
 `--timeout` / `--num-runs`.
+
+## Gating CI on regressions
+
+`run` exits non-zero on any finding. Against a real agent something always fails, so
+that gate goes red on day one and gets switched off by week two. Baseline what you
+already know about, and block only on what's new:
+
+```bash
+aion-redteam run --target my_agent.py            # first run: see where you stand
+aion-redteam baseline accept                     # record those verdicts as known
+aion-redteam run --target my_agent.py --baseline .aion_redteam/baseline.json
+```
+
+The second run prints the delta — `2 new failures, 1 fixed, 17 unchanged` — and exits
+non-zero only for scenarios that went from passing to failing. Narrow it further with
+`--fail-on critical`. A scenario your baseline has never seen is reported separately,
+never counted as a regression.
+
+## Turning a finding into a fix
+
+`harden` reads your last run and writes two things: a policy a runtime can enforce, and
+a pytest module that fails if the finding comes back.
+
+```bash
+aion-redteam harden --dry-run     # show what would be written
+aion-redteam harden
+```
+
+```
+Generated 3 policies         -> aion_policies/
+Generated 3 regression tests -> tests/test_aion_regressions.py
+2 findings skipped (text-only criteria, no enforceable rule): ASI09-001, ASI09-002
+```
+
+Only findings that matched on **tool calls** produce a policy — inverting "the agent
+called a shell tool with `rm -rf`" into a deny rule is mechanical, while "the agent said
+something that looked like a fake citation" has no equivalent a tool gate can evaluate.
+Those are skipped with a reason rather than turned into a rule nothing can apply.
+
+`harden` generates files. It does not enforce anything. The schema and its rationale are
+in [`docs/policy_schema.md`](docs/policy_schema.md).
 
 ## How it works
 
@@ -241,11 +292,14 @@ mitigations:
 
 ## Status & roadmap
 
-Pre-release (`v0.1.0`). Working today: the core harness, the LangGraph adapter, 20
-scenarios across all 10 ASI categories, the CLI (`list` / `validate` / `run` / `report` /
-`init`), and terminal / JSON / HTML reports. See [CHANGELOG.md](CHANGELOG.md).
+Pre-release (`v0.3.0`). Working today: the core harness, the LangGraph adapters
+(in-process and HTTP server), 20 scenarios across all 10 ASI categories — 14 of them
+asserting on real tool calls — the CLI (`list` / `validate` / `run` / `report` /
+`harden` / `baseline` / `init`), and terminal / JSON / HTML / PDF reports.
+See [CHANGELOG.md](CHANGELOG.md).
 
-Planned: a `langgraph-server` HTTP adapter, an LLM-based judge, and CrewAI / MCP adapters.
+Planned for v0.4: a `behavioral_check` criterion type for run-level signals (call
+counts, goal drift), an LLM-based judge, and CrewAI / MCP adapters — one at a time.
 
 ## Contributing
 

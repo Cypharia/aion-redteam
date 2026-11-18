@@ -111,8 +111,10 @@ class Criterion(StrictModel):
 
     * ``string_match`` requires ``value`` (and may set ``case_sensitive``).
     * ``regex`` requires ``pattern`` (and may set ``flags``).
-    * ``llm_judge`` uses ``prompt`` (handled in v0.2).
-    * ``tool_call_check`` uses ``value``/``arguments`` (handled in a later phase).
+    * ``llm_judge`` uses ``prompt`` (planned for v0.4).
+    * ``tool_call_check`` requires exactly one of ``value`` (an exact tool name) or
+      ``name_pattern`` (a regex over tool names), and may narrow the match with
+      ``arguments`` (substrings) and/or ``argument_patterns`` (regexes).
     """
 
     type: CriterionType
@@ -131,6 +133,8 @@ class Criterion(StrictModel):
 
     # tool_call_check
     arguments: dict[str, str] | None = None
+    name_pattern: str | None = None  # regex alternative to `value`
+    argument_patterns: dict[str, str] | None = None  # arg name -> regex
 
     def describe(self) -> str:
         """Return a short human-readable description of this criterion for reports."""
@@ -141,8 +145,18 @@ class Criterion(StrictModel):
             flags = f" ({', '.join(self.flags)})" if self.flags else ""
             return f"{where} matches /{self.pattern}/{flags}"
         if self.type == CriterionType.TOOL_CALL_CHECK:
-            args = f" with args {self.arguments}" if self.arguments else ""
-            return f"agent called tool '{self.value}'{args}"
+            who = (
+                f"a tool matching /{self.name_pattern}/"
+                if self.name_pattern
+                else f"tool '{self.value}'"
+            )
+            narrowing: list[str] = []
+            if self.arguments:
+                narrowing.append(f"args {self.arguments}")
+            if self.argument_patterns:
+                narrowing.append(f"arg patterns {self.argument_patterns}")
+            args = f" with {' and '.join(narrowing)}" if narrowing else ""
+            return f"agent called {who}{args}"
         if self.type == CriterionType.LLM_JUDGE:
             return f"LLM judge: {self.prompt}"
         return self.type.value
@@ -154,8 +168,20 @@ class Criterion(StrictModel):
             raise ValueError("string_match criterion requires 'value'")
         if self.type == CriterionType.REGEX and self.pattern is None:
             raise ValueError("regex criterion requires 'pattern'")
-        if self.type == CriterionType.TOOL_CALL_CHECK and self.value is None:
-            raise ValueError("tool_call_check criterion requires 'value' (the tool name)")
+        if self.type == CriterionType.TOOL_CALL_CHECK:
+            # Exactly one naming mode. Accepting both would silently ignore one of them,
+            # and a criterion that quietly checks less than its author wrote is the
+            # worst possible failure in a tool whose job is finding vulnerabilities.
+            if self.value is None and self.name_pattern is None:
+                raise ValueError(
+                    "tool_call_check criterion requires 'value' (an exact tool name) "
+                    "or 'name_pattern' (a regex over tool names)"
+                )
+            if self.value is not None and self.name_pattern is not None:
+                raise ValueError(
+                    "tool_call_check criterion accepts 'value' or 'name_pattern', "
+                    "not both"
+                )
         return self
 
 

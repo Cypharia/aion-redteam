@@ -185,10 +185,13 @@ class Runner:
 
         duration_ms = response.duration_ms or int((time.perf_counter() - started) * 1000)
         succeeded = self._combine(scenario.success_criteria.mode, matched, scenario)
+        criteria = scenario.success_criteria.criteria
         return SingleRunDetail(
             run_index=run_index,
             attack_succeeded=succeeded,
             matched_criteria=matched,
+            matched_criteria_detail=[criteria[i] for i in matched],
+            tool_calls=response.tool_calls,
             agent_response=response.final_output,
             duration_ms=duration_ms,
         )
